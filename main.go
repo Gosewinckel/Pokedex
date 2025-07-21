@@ -1,6 +1,7 @@
 package main
 
 import (
+	"Pokedex/internal/pokecache"
 	"bufio"
 	"encoding/json"
 	"net/http"
@@ -8,12 +9,13 @@ import (
 	"io"
 	"fmt"
 	"strings"
+	"time"
 )
 
 type cliCommand struct {
 	name string
 	description string
-	callback func(conf *config) error
+	callback func(conf *config, cache *pokecache.Cache, area *string) error
 }
 
 type config struct {
@@ -31,7 +33,6 @@ type LocationAreaResponse struct {
     } `json:"results"`
 }
 
-//test this
 func createCommandMap() map[string]cliCommand {
 	commandMap := map[string]cliCommand {
 		"exit": {
@@ -54,6 +55,11 @@ func createCommandMap() map[string]cliCommand {
 			description: "shows previous 20 locations",
 			callback: commandMapb,
 		},
+		"explore": {
+			name: "explore",
+			description: "explore an area",
+			callback: commandExplore,
+		},
 	}
 	return commandMap
 }
@@ -66,14 +72,14 @@ func cleanInput(text string) []string {
 	return clean
 }
 
-func commandExit(conf *config) error {
+func commandExit(conf *config, cache *pokecache.Cache, area *string) error {
 	fmt.Printf("Closing the Pokedex... Goodbye!\n")
 	os.Exit(0)
 	err := fmt.Errorf("could not close program")
 	return err
 }
 
-func commandHelp(conf *config) error {
+func commandHelp(conf *config, cache *pokecache.Cache, area *string) error {
 	commandMap := createCommandMap()
 	fmt.Printf("Welcome to the Pokedex!\nUsage:\n\n")
 	for i := range commandMap {
@@ -82,44 +88,65 @@ func commandHelp(conf *config) error {
 	return nil
 }
 
-func commandMap(conf *config) error {
+func commandMap(conf *config, cache *pokecache.Cache, area *string) error {
 	if conf.next == nil {
 		fmt.Printf("End of map\n")
 		return nil
 	}
-	res, err := http.Get(*conf.next)
-	if err != nil {
-		fmt.Printf("Could not retrieve map data\n")
-		return err
-	}
-	body, err := io.ReadAll(res.Body)
-	defer res.Body.Close()
-	if res.StatusCode > 299 {
-		fmt.Printf("could not connect to the server\n")
-		return nil
-	}
-	if err != nil {
-		fmt.Printf("could not retrieve map data\n")
-		return err
-	}
 	var location LocationAreaResponse
-	err = json.Unmarshal(body, &location)
-	if err != nil {
-		fmt.Println(err)
-		return err
-	}
-	for _, result := range location.Results {
-		fmt.Println(result.Name)
+
+	//in cache
+	if data, ok := cache.Get(*conf.next); ok {
+		cache.Add(*conf.next, data)
+		err := json.Unmarshal(data, &location)
+		if err != nil {
+			fmt.Println(err)
+			return err
+		}
+	} else {
+		res, err := http.Get(*conf.next)
+		if err != nil {
+			fmt.Printf("Could not retrieve map data\n")
+			return err
+		}
+		body, err := io.ReadAll(res.Body)
+		defer res.Body.Close()
+		if res.StatusCode > 299 {
+			fmt.Printf("could not connect to the server\n")
+			return nil
+		}
+		if err != nil {
+			fmt.Printf("could not retrieve map data\n")
+			return err
+		}
+		err = json.Unmarshal(body, &location)
+		if err != nil {
+			fmt.Println(err)
+			return err
+		}
+		for _, result := range location.Results {
+			fmt.Println(result.Name)
+		}
 	}
 	conf.previous = conf.next
 	conf.next = location.Next
 	return nil
 }
 
-func commandMapb(conf *config) error {
+func commandMapb(conf *config, cache *pokecache.Cache, area *string) error {
 	if conf.previous == nil {
 		fmt.Println("Start of map")
 		return nil
+	}
+	var location LocationAreaResponse
+
+	if data, ok := cache.Get(*conf.previous); ok {
+		cache.Add(*conf.previous, data)
+		err := json.Unmarshal(data, &location)
+		if err != nil {
+			fmt.Println(err)
+			return err
+		}
 	}
 	res, err := http.Get(*conf.previous)
 	if err != nil {
@@ -136,7 +163,6 @@ func commandMapb(conf *config) error {
 		fmt.Println(err)
 		return err
 	}
-	var location LocationAreaResponse
 	err = json.Unmarshal(body, &location)
 	if err != nil {
 		fmt.Println(err)
@@ -150,6 +176,10 @@ func commandMapb(conf *config) error {
 	return nil
 }
 
+func commandExplore(conf *config, cache *pokecache.Cache, area *string) error {
+	url := "https://pokeapi.co/api/v2/location-area" + *area
+}
+
 func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 	var conf *config
@@ -157,8 +187,9 @@ func main() {
 	mapURL := "https://pokeapi.co/api/v2/location-area"
 	mapConf.next = &mapURL
 	conf = &mapConf
+	commandMap := createCommandMap()
+	cache := pokecache.NewCache(time.Second * 5)
 	for  {
-		commandMap := createCommandMap()
 		fmt.Print("Pokedex > ")
 		scanner.Scan()
 		line := scanner.Text()
@@ -168,7 +199,7 @@ func main() {
 		}
 		val, ok := commandMap[clean[0]]
 		if ok {
-			val.callback(conf)
+			val.callback(conf, cache)
 		} else {
 			fmt.Printf("Unknown command\n")
 		}
